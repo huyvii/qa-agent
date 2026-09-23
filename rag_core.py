@@ -73,9 +73,18 @@ def answer_question(question: str, vectorstore, llm, source_file_filter: str = N
     context = "\n\n".join([doc.page_content for doc in results])
 
     prompt = ChatPromptTemplate.from_template(
-        """Dựa vào ngữ cảnh sau, trả lời câu hỏi bằng tiếng Việt.
-Chỉ trả lời dựa trên ngữ cảnh, không dùng kiến thức ngoài.
-Nếu ngữ cảnh không đủ thông tin, nói rõ là không tìm thấy.
+        """Bạn là trợ lý AI hỏi đáp tài liệu PDF. Trả lời bằng tiếng Việt.
+
+Ưu tiên trước hết: kiểm tra ngữ cảnh tài liệu bên dưới có liên quan đến câu hỏi hay không.
+
+- Nếu ngữ cảnh có thông tin liên quan, trả lời dựa trên ngữ cảnh. Không thêm chi tiết
+  mà tài liệu không nêu và không nói đó là kiến thức bên ngoài.
+- Nếu câu hỏi nằm ngoài phạm vi tài liệu hoặc ngữ cảnh không đề cập đủ để trả lời,
+  bạn vẫn có thể trả lời bằng kiến thức chung nếu phù hợp. Khi đó phải mở đầu rõ ràng
+  bằng "Ngoài phạm vi tài liệu:" và nói rằng câu trả lời này không dựa trên PDF.
+- Không bịa nội dung, số liệu, kinh nghiệm hoặc nguồn tham khảo cho tài liệu.
+- Nếu không thể đưa ra một câu trả lời hữu ích ngay cả bằng kiến thức chung, hãy nói rõ
+  điều đó thay vì đoán.
 
 Ngữ cảnh:
 {context}
