@@ -1,0 +1,252 @@
+{
+  "metric": "retrieval_hit_at_3",
+  "definition": "A test case is a hit when at least one of the top 3 retrieved chunks contains its predefined expected evidence text.",
+  "embedding_model": "sentence-transformers/all-MiniLM-L6-v2",
+  "source_file": "Hoang-An_Pham-AI-Engineer (2).pdf",
+  "evaluated_at_utc": "2026-09-23T13:36:03.222715+00:00",
+  "total_cases": 10,
+  "hits": 8,
+  "accuracy": 0.8,
+  "cases": [
+    {
+      "id": "identity_name",
+      "question": "Tên của ứng viên trong CV là gì?",
+      "expected_evidence": "An Pham Hoang",
+      "reference_chunk": 1,
+      "hit": true,
+      "retrieved_chunks": [
+        {
+          "page": 0,
+          "preview": "An Pham Hoang\nRobotics AI Engineer\n +84965049205 ✉ halibank2@gmail.com  Berlin Germany  https://www.linkedin.com/in/hoang-an-pham-403a59189/\nCAREER GOALS\nResearch and develop in",
+          "contains_expected_evidence": true
+        },
+        {
+          "page": 1,
+          "preview": "CERTIFICATION\nReinforcement Learning Specialization\nLarge Language Model Operations (LLMOps) Specialization\nLarge Language Model Agents MOOC\nIELTS: 6.5  \nAWARDS\n2019 Third prize in",
+          "contains_expected_evidence": false
+        },
+        {
+          "page": 0,
+          "preview": "REMARKABLE PROJECT\nMaster thesis -\nFrom Video to Simulation: A Real2Sim Pipeline Converting 3D Gaussian Reconstructions into Physics-Ready Isaac Sim Environments\n• We reconstruct h",
+          "contains_expected_evidence": false
+        }
+      ]
+    },
+    {
+      "id": "identity_role",
+      "question": "Chức danh hiện trên đầu CV là gì?",
+      "expected_evidence": "Robotics AI Engineer",
+      "reference_chunk": 1,
+      "hit": true,
+      "retrieved_chunks": [
+        {
+          "page": 0,
+          "preview": "An Pham Hoang\nRobotics AI Engineer\n +84965049205 ✉ halibank2@gmail.com  Berlin Germany  https://www.linkedin.com/in/hoang-an-pham-403a59189/\nCAREER GOALS\nResearch and develop in",
+          "contains_expected_evidence": true
+        },
+        {
+          "page": 0,
+          "preview": "Intern\nA study on designing control and monitor algorithms for robot arm\n• Applying Python for controlling robot arm and processing image with traditional computer vision.\n• Resear",
+          "contains_expected_evidence": false
+        },
+        {
+          "page": 0,
+          "preview": "projects:\n• Scoreboard: a system design for post - checking electric circuits.\n• System verify assertion.\nCVEDIX- Intern AI engineer                                                ",
+          "contains_expected_evidence": false
+        }
+      ]
+    },
+    {
+      "id": "education_bachelor_gpa",
+      "question": "GPA bậc cử nhân của ứng viên là bao nhiêu?",
+      "expected_evidence": "GPA 7.69",
+      "reference_chunk": 1,
+      "hit": true,
+      "retrieved_chunks": [
+        {
+          "page": 0,
+          "preview": "An Pham Hoang\nRobotics AI Engineer\n +84965049205 ✉ halibank2@gmail.com  Berlin Germany  https://www.linkedin.com/in/hoang-an-pham-403a59189/\nCAREER GOALS\nResearch and develop in",
+          "contains_expected_evidence": true
+        },
+        {
+          "page": 1,
+          "preview": "CERTIFICATION\nReinforcement Learning Specialization\nLarge Language Model Operations (LLMOps) Specialization\nLarge Language Model Agents MOOC\nIELTS: 6.5  \nAWARDS\n2019 Third prize in",
+          "contains_expected_evidence": false
+        },
+        {
+          "page": 0,
+          "preview": "Master in Artificial (GPA at: 1.8 Bavaria score or 8.7 in Vietnam)\nFocusing on Large Language model operation (LLMOps) and 3D environment reconstruction for Robot training.\nEXPERIE",
+          "contains_expected_evidence": false
+        }
+      ]
+    },
+    {
+      "id": "education_master_school",
+      "question": "Ứng viên đang học thạc sĩ tại trường nào?",
+      "expected_evidence": "Iu Internationale Hochschule",
+      "reference_chunk": 1,
+      "hit": true,
+      "retrieved_chunks": [
+        {
+          "page": 0,
+          "preview": "An Pham Hoang\nRobotics AI Engineer\n +84965049205 ✉ halibank2@gmail.com  Berlin Germany  https://www.linkedin.com/in/hoang-an-pham-403a59189/\nCAREER GOALS\nResearch and develop in",
+          "contains_expected_evidence": true
+        },
+        {
+          "page": 1,
+          "preview": "CERTIFICATION\nReinforcement Learning Specialization\nLarge Language Model Operations (LLMOps) Specialization\nLarge Language Model Agents MOOC\nIELTS: 6.5  \nAWARDS\n2019 Third prize in",
+          "contains_expected_evidence": false
+        },
+        {
+          "page": 1,
+          "preview": "• We extended pipeline to support supper-fast targeted object-centric segementation for 3D Gaussian Splat scene.\n• Supporting for Isaac-Sim simulation environment in terms of colli",
+          "contains_expected_evidence": false
+        }
+      ]
+    },
+    {
+      "id": "experience_renesas",
+      "question": "Ứng viên làm việc tại Renesas Design Vietnam trong thời gian nào?",
+      "expected_evidence": "Renesas Design Vietnam 5-2023 - 7-2024",
+      "reference_chunk": 3,
+      "hit": true,
+      "retrieved_chunks": [
+        {
+          "page": 0,
+          "preview": "An Pham Hoang\nRobotics AI Engineer\n +84965049205 ✉ halibank2@gmail.com  Berlin Germany  https://www.linkedin.com/in/hoang-an-pham-403a59189/\nCAREER GOALS\nResearch and develop in",
+          "contains_expected_evidence": false
+        },
+        {
+          "page": 0,
+          "preview": "Intern\nA study on designing control and monitor algorithms for robot arm\n• Applying Python for controlling robot arm and processing image with traditional computer vision.\n• Resear",
+          "contains_expected_evidence": true
+        },
+        {
+          "page": 0,
+          "preview": "Master in Artificial (GPA at: 1.8 Bavaria score or 8.7 in Vietnam)\nFocusing on Large Language model operation (LLMOps) and 3D environment reconstruction for Robot training.\nEXPERIE",
+          "contains_expected_evidence": false
+        }
+      ]
+    },
+    {
+      "id": "experience_cvedix",
+      "question": "Tại CVEDIX, ứng viên làm vị trí nào?",
+      "expected_evidence": "CVEDIX- Intern AI engineer",
+      "reference_chunk": 4,
+      "hit": true,
+      "retrieved_chunks": [
+        {
+          "page": 0,
+          "preview": "projects:\n• Scoreboard: a system design for post - checking electric circuits.\n• System verify assertion.\nCVEDIX- Intern AI engineer                                                ",
+          "contains_expected_evidence": true
+        },
+        {
+          "page": 0,
+          "preview": "An Pham Hoang\nRobotics AI Engineer\n +84965049205 ✉ halibank2@gmail.com  Berlin Germany  https://www.linkedin.com/in/hoang-an-pham-403a59189/\nCAREER GOALS\nResearch and develop in",
+          "contains_expected_evidence": false
+        },
+        {
+          "page": 1,
+          "preview": "CERTIFICATION\nReinforcement Learning Specialization\nLarge Language Model Operations (LLMOps) Specialization\nLarge Language Model Agents MOOC\nIELTS: 6.5  \nAWARDS\n2019 Third prize in",
+          "contains_expected_evidence": false
+        }
+      ]
+    },
+    {
+      "id": "project_master_thesis",
+      "question": "Tên đề tài master thesis của ứng viên là gì?",
+      "expected_evidence": "From Video to Simulation: A Real2Sim Pipeline",
+      "reference_chunk": 5,
+      "hit": false,
+      "retrieved_chunks": [
+        {
+          "page": 0,
+          "preview": "An Pham Hoang\nRobotics AI Engineer\n +84965049205 ✉ halibank2@gmail.com  Berlin Germany  https://www.linkedin.com/in/hoang-an-pham-403a59189/\nCAREER GOALS\nResearch and develop in",
+          "contains_expected_evidence": false
+        },
+        {
+          "page": 1,
+          "preview": "Large language model operation for application \n• We perform documentation embedding and cloud-service approach with Azure for chatbot application\n• A demo can be found at: https:/",
+          "contains_expected_evidence": false
+        },
+        {
+          "page": 0,
+          "preview": "Master in Artificial (GPA at: 1.8 Bavaria score or 8.7 in Vietnam)\nFocusing on Large Language model operation (LLMOps) and 3D environment reconstruction for Robot training.\nEXPERIE",
+          "contains_expected_evidence": false
+        }
+      ]
+    },
+    {
+      "id": "project_bachelor_thesis",
+      "question": "Bachelor thesis của ứng viên nghiên cứu về chủ đề gì?",
+      "expected_evidence": "Tele-Manipulator",
+      "reference_chunk": 6,
+      "hit": false,
+      "retrieved_chunks": [
+        {
+          "page": 0,
+          "preview": "An Pham Hoang\nRobotics AI Engineer\n +84965049205 ✉ halibank2@gmail.com  Berlin Germany  https://www.linkedin.com/in/hoang-an-pham-403a59189/\nCAREER GOALS\nResearch and develop in",
+          "contains_expected_evidence": false
+        },
+        {
+          "page": 0,
+          "preview": "Master in Artificial (GPA at: 1.8 Bavaria score or 8.7 in Vietnam)\nFocusing on Large Language model operation (LLMOps) and 3D environment reconstruction for Robot training.\nEXPERIE",
+          "contains_expected_evidence": false
+        },
+        {
+          "page": 1,
+          "preview": "Large language model operation for application \n• We perform documentation embedding and cloud-service approach with Azure for chatbot application\n• A demo can be found at: https:/",
+          "contains_expected_evidence": false
+        }
+      ]
+    },
+    {
+      "id": "project_azure_rag",
+      "question": "Dự án chatbot Azure của ứng viên có đường dẫn GitHub nào?",
+      "expected_evidence": "azure-rag_1",
+      "reference_chunk": 10,
+      "hit": true,
+      "retrieved_chunks": [
+        {
+          "page": 1,
+          "preview": "Large language model operation for application \n• We perform documentation embedding and cloud-service approach with Azure for chatbot application\n• A demo can be found at: https:/",
+          "contains_expected_evidence": true
+        },
+        {
+          "page": 0,
+          "preview": "An Pham Hoang\nRobotics AI Engineer\n +84965049205 ✉ halibank2@gmail.com  Berlin Germany  https://www.linkedin.com/in/hoang-an-pham-403a59189/\nCAREER GOALS\nResearch and develop in",
+          "contains_expected_evidence": false
+        },
+        {
+          "page": 1,
+          "preview": "Real-time Financial Anomaly Detection in Transaction Streams with Explainable Output\n• We create an chatbot application for real-time transaction detection with rish awareness and ",
+          "contains_expected_evidence": false
+        }
+      ]
+    },
+    {
+      "id": "certification_ielts",
+      "question": "Điểm IELTS được ghi trong CV là bao nhiêu?",
+      "expected_evidence": "IELTS: 6.5",
+      "reference_chunk": 11,
+      "hit": true,
+      "retrieved_chunks": [
+        {
+          "page": 0,
+          "preview": "An Pham Hoang\nRobotics AI Engineer\n +84965049205 ✉ halibank2@gmail.com  Berlin Germany  https://www.linkedin.com/in/hoang-an-pham-403a59189/\nCAREER GOALS\nResearch and develop in",
+          "contains_expected_evidence": false
+        },
+        {
+          "page": 1,
+          "preview": "CERTIFICATION\nReinforcement Learning Specialization\nLarge Language Model Operations (LLMOps) Specialization\nLarge Language Model Agents MOOC\nIELTS: 6.5  \nAWARDS\n2019 Third prize in",
+          "contains_expected_evidence": true
+        },
+        {
+          "page": 0,
+          "preview": "Master in Artificial (GPA at: 1.8 Bavaria score or 8.7 in Vietnam)\nFocusing on Large Language model operation (LLMOps) and 3D environment reconstruction for Robot training.\nEXPERIE",
+          "contains_expected_evidence": false
+        }
+      ]
+    }
+  ]
+}
