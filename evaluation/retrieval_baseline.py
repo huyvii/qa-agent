@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
+import sys
 import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,8 +18,15 @@ from pathlib import Path
 from langchain_chroma import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from rag_core import retrieve  # noqa: E402 — đo đúng pipeline thật, không phải similarity_search thuần
 
-EMBEDDING_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
+
+# Phải cùng model với chroma_db đang dùng (giống rag_core) — vector lệch model là vô nghĩa.
+EMBEDDING_MODEL_NAME = os.getenv(
+    "EMBEDDING_MODEL_NAME",
+    "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+)
 DEFAULT_SOURCE_FILE = "Hoang-An_Pham-AI-Engineer (2).pdf"
 DEFAULT_CHROMA_DIR = Path("chroma_db")
 DEFAULT_OUTPUT = Path("evaluation/results/retrieval_baseline.json")
@@ -101,9 +110,7 @@ def evaluate(source_file: str, chroma_dir: Path, k: int) -> dict:
 
     cases = []
     for case in TEST_CASES:
-        documents = vectorstore.similarity_search(
-            case["question"], k=k, filter={"source_file": source_file}
-        )
+        documents = retrieve(case["question"], vectorstore, source_file, k=k)
         expected = normalize(case["expected_evidence"])
         retrieved = [
             {
@@ -124,6 +131,7 @@ def evaluate(source_file: str, chroma_dir: Path, k: int) -> dict:
     hit_count = sum(case["hit"] for case in cases)
     return {
         "metric": f"retrieval_hit_at_{k}",
+        "retrieval": "hybrid: multilingual vector + BM25, fused by RRF (rag_core.retrieve)",
         "definition": (
             f"A test case is a hit when at least one of the top {k} retrieved chunks "
             "contains its predefined expected evidence text."

@@ -22,9 +22,9 @@ print(f"Đã chia thành {len(chunks)} chunk")
 print("--- Ví dụ chunk đầu tiên ---")
 print(chunks[0].page_content[:300])
 
-# 3. Tạo embedding model (chạy local, free, CPU)
+# 3. Tạo embedding model (chạy local, free, CPU) — cùng model với rag_core
 embedding_model = HuggingFaceEmbeddings(
-    model_name="sentence-transformers/all-MiniLM-L6-v2"
+    model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 )
 
 # 4. Lưu vào Chroma vector DB

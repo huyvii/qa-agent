@@ -2,7 +2,7 @@ import streamlit as st
 import tempfile
 import os
 import time
-from rag_core import ingest_pdf, answer_question, get_vectorstore
+from rag_core import ingest_pdf, answer_stream, get_vectorstore
 from langchain_google_genai import ChatGoogleGenerativeAI
 import chat_db
 
@@ -121,28 +121,35 @@ else:
     question = st.chat_input("Nhập câu hỏi về tài liệu...")
 
     if question:
+        # messages được nạp trước khi lưu câu hỏi mới nên history chưa gồm câu này
+        history = [{"role": m["role"], "content": m["content"]} for m in messages[-8:]]
+
         chat_db.save_message(active_id, "user", question)
         with st.chat_message("user"):
             st.write(question)
 
         with st.chat_message("assistant"):
+            request_started = time.perf_counter()
+            resource_started = time.perf_counter()
+            vectorstore = load_vectorstore()
+            llm = load_llm()
+            resource_load_seconds = time.perf_counter() - resource_started
+            answer_timings = {}
             with st.spinner("Đang tìm câu trả lời..."):
-                request_started = time.perf_counter()
-                resource_started = time.perf_counter()
-                vectorstore = load_vectorstore()
-                llm = load_llm()
-                resource_load_seconds = time.perf_counter() - resource_started
-                answer_timings = {}
-                answer, sources = answer_question(
+                answer_gen, sources = answer_stream(
                     question, vectorstore, llm,
                     source_file_filter=active_conv["source_file"],
+                    history=history,
                     timings=answer_timings,
                 )
-            st.write(answer)
+            # stream từng token; write_stream trả về text đầy đủ để lưu DB
+            full_answer = st.write_stream(answer_gen)
+            condense_seconds = answer_timings.get("condense_seconds", 0.0)
             st.caption(
                 "⏱ "
                 f"load resource {resource_load_seconds:.2f}s · "
-                f"retrieval + query embedding {answer_timings['retrieval_seconds']:.2f}s · "
+                f"viết lại câu hỏi {condense_seconds:.2f}s · "
+                f"retrieval {answer_timings['retrieval_seconds']:.2f}s · "
                 f"Gemini {answer_timings['llm_seconds']:.2f}s · "
                 f"tổng {time.perf_counter() - request_started:.2f}s"
             )
@@ -150,4 +157,4 @@ else:
                 for s in sources:
                     st.write(f"- {s}")
 
-        chat_db.save_message(active_id, "assistant", answer, sources)
+        chat_db.save_message(active_id, "assistant", full_answer, sources)
