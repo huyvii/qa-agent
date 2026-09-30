@@ -27,7 +27,9 @@
 - Nhiều cuộc trò chuyện; mỗi cuộc gắn với một PDF. Retrieval lọc theo `source_file` để không lẫn dữ liệu giữa các file.
 - Hiển thị nguồn tham khảo gồm tên file và số trang.
 - Trả lời stream từng token; câu hỏi nối tiếp được viết lại thành câu độc lập trước khi tra cứu để giữ ngữ cảnh hội thoại (multi-turn).
-- Không ingest lại tài liệu đã có cùng tên file.
+- Nhận diện tài liệu bằng hash nội dung (SHA-256): cùng file không nhúng lại; trùng tên nhưng khác nội dung tự động xóa vector cũ và nạp lại.
+- Trang PDF gần như không có text (bản scan/hình ảnh) được cảnh báo ngay khi ingest.
+- Gate mật khẩu tùy chọn qua biến `APP_PASSWORD` — bật khi đưa link cho người khác.
 - Xóa cuộc trò chuyện chỉ xóa lịch sử chat, không xóa vector của PDF.
 - Ưu tiên trả lời theo PDF; với câu hỏi ngoài phạm vi tài liệu, câu trả lời được đánh dấu rõ là kiến thức chung.
 
@@ -112,10 +114,18 @@ Hai cách mở project thành link web cho người khác:
 
 ## Giới hạn
 
-- Pipeline hiện tập trung vào text; bảng phức tạp, hình ảnh, công thức hoặc layout đặc biệt có thể trích xuất không chính xác.
-- ChromaDB và SQLite chạy local, phù hợp học tập/demo; chưa có đăng nhập hoặc phân quyền người dùng.
-- File được nhận diện theo tên. Hai PDF khác nội dung nhưng trùng tên hiện có thể bị xem là cùng tài liệu.
-- Chưa có unit test và xử lý lỗi đầy đủ cho PDF rỗng, file quá lớn hoặc lỗi API.
+- Pipeline hiện tập trung vào text; bảng phức tạp, hình ảnh, công thức hoặc layout đặc biệt có thể trích xuất không chính xác. Trang scan được cảnh báo khi ingest; OCR chỉ nên thêm khi có tài liệu thực tế cần nó.
+- ChromaDB và SQLite chạy local (đổi vị trí qua `CHROMA_DIR` / `CHAT_DB_PATH` để mount volume khi deploy). Mật khẩu gate là lớp chặn kiểu demo — production cần đăng nhập thật theo user.
+- Xử lý lỗi chưa phủ hết các trường hợp PDF rỗng, file quá lớn hoặc lỗi API.
+
+## Kiểm thử
+
+```powershell
+pip install -r requirements-dev.txt
+python -m pytest tests -q
+```
+
+Bộ test phủ logic thuần (tokenize, RRF fusion, chuẩn hóa text), SQLite (roundtrip, cascade xóa, format timestamp) và hành vi hybrid retrieval qua fake vectorstore.
 
 ## Hướng phát triển
 
