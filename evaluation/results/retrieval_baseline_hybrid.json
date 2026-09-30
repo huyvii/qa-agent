@@ -4,7 +4,7 @@
   "definition": "A test case is a hit when at least one of the top 3 retrieved chunks contains its predefined expected evidence text.",
   "embedding_model": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
   "source_file": "Hoang-An_Pham-AI-Engineer (2).pdf",
-  "evaluated_at_utc": "2026-09-30T17:36:42.947514+00:00",
+  "evaluated_at_utc": "2026-09-30T18:23:56.795635+00:00",
   "total_cases": 10,
   "hits": 8,
   "accuracy": 0.8,
