@@ -26,6 +26,7 @@
 - Upload và ingest nhiều file PDF.
 - Nhiều cuộc trò chuyện; mỗi cuộc gắn với một PDF. Retrieval lọc theo `source_file` để không lẫn dữ liệu giữa các file.
 - Hiển thị nguồn tham khảo gồm tên file và số trang.
+- Trả lời stream từng token; câu hỏi nối tiếp được viết lại thành câu độc lập trước khi tra cứu để giữ ngữ cảnh hội thoại (multi-turn).
 - Không ingest lại tài liệu đã có cùng tên file.
 - Xóa cuộc trò chuyện chỉ xóa lịch sử chat, không xóa vector của PDF.
 - Ưu tiên trả lời theo PDF; với câu hỏi ngoài phạm vi tài liệu, câu trả lời được đánh dấu rõ là kiến thức chung.
@@ -33,10 +34,10 @@
 ## Cách hoạt động
 
 ```text
-PDF → tách chunk → embedding local (all-MiniLM-L6-v2)
+PDF → tách chunk → embedding multilingual (paraphrase-multilingual-MiniLM-L12-v2)
     → lưu vào ChromaDB kèm metadata (source_file, page)
-    → semantic search top-k, lọc theo source_file
-    → ghép context vào prompt → Gemini sinh câu trả lời
+    → hybrid retrieval: vector + BM25, hợp nhất bằng RRF, lọc theo source_file
+    → ghép context vào prompt → Gemini sinh câu trả lời (streaming)
 ```
 
 Lịch sử và metadata được lưu trong SQLite:
@@ -53,7 +54,7 @@ messages        — câu hỏi, câu trả lời và nguồn tham khảo
 | `rag_core.py` | Ingest, retrieval và gọi Gemini |
 | `chat_db.py` | Quản lý SQLite |
 
-**Công nghệ:** Python, LangChain, ChromaDB, sentence-transformers, Google Gemini API, SQLite và Streamlit.
+**Công nghệ:** Python, LangChain, ChromaDB, sentence-transformers, BM25 (hybrid retrieval), Google Gemini API, SQLite và Streamlit.
 
 ## Quyết định thiết kế
 
@@ -90,6 +91,25 @@ streamlit run app.py
 
 Upload PDF ở sidebar, tạo cuộc trò chuyện mới và đặt câu hỏi. Lần chạy đầu có thể chậm hơn do embedding model được nạp vào bộ nhớ.
 
+## Đánh giá retrieval
+
+`evaluation/retrieval_baseline.py` đo Hit@3 trên 10 câu hỏi tiếng Việt với evidence định sẵn trong CV mẫu; kết quả từng lần chạy lưu trong `evaluation/results/`.
+
+| Cấu hình | Hit@3 |
+|---|---|
+| Vector all-MiniLM-L6-v2 (English-only) | 8/10 |
+| Vector multilingual thuần | 6/10 |
+| Hybrid: multilingual vector + BM25, hợp nhất RRF | 8/10 |
+
+Điểm thú vị: multilingual thuần đỗ 2 case luận văn mà model English trượt (đúng nghĩa Việt↔Anh) nhưng lại trượt các case định danh (tên, GPA) cần khớp từ khóa chính xác. Hai nhánh gãy ở chỗ khác nhau — hybrid gom được ưu điểm cả hai. 2 case còn fail do chunk không chứa từ khóa nào của câu hỏi tiếng Việt; hướng giải quyết là query translation hoặc reranker đa ngữ.
+
+## Cho người khác dùng (deploy)
+
+Hai cách mở project thành link web cho người khác:
+
+- **Streamlit Community Cloud (miễn phí, ~15 phút):** push code lên GitHub, kết nối repo tại share.streamlit.io, dán `GOOGLE_API_KEY` vào phần Secrets. Lưu ý: filesystem tạm thời — PDF đã ingest và lịch sử chat mất khi app restart, và mọi người dùng chung một kho tài liệu. Đủ cho demo/portfolio.
+- **VPS hoặc Railway/Render + Docker (chi phí nhỏ):** mount volume cho `chroma_db/` và `chat_history.db` để dữ liệu bền, chủ động kiểm soát tài nguyên. Đủ cho người dùng thật dùng thử.
+
 ## Giới hạn
 
 - Pipeline hiện tập trung vào text; bảng phức tạp, hình ảnh, công thức hoặc layout đặc biệt có thể trích xuất không chính xác.
@@ -99,7 +119,7 @@ Upload PDF ở sidebar, tạo cuộc trò chuyện mới và đặt câu hỏi. 
 
 ## Hướng phát triển
 
-- Thêm BGE multilingual reranker và đánh giá chất lượng retrieval sau khi pipeline ổn định.
+- Query translation hoặc reranker đa ngữ (bge-reranker) cho 2 case retrieval còn fail; mở rộng bộ eval ra nhiều loại PDF.
 - Thêm Parent Document Retriever: search bằng chunk nhỏ nhưng gửi context lớn hơn cho Gemini.
 - Bổ sung xử lý lỗi và unit test.
 - Xây dựng bộ đánh giá trên nhiều loại tài liệu PDF.
