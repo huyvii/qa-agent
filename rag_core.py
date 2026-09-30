@@ -1,3 +1,4 @@
+import hashlib
 import os
 import re
 import time
@@ -20,7 +21,8 @@ EMBEDDING_MODEL_NAME = os.getenv(
     "EMBEDDING_MODEL_NAME",
     "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
 )
-CHROMA_DIR = "./chroma_db"
+CHROMA_DIR = os.getenv("CHROMA_DIR", "./chroma_db")
+EMPTY_PAGE_THRESHOLD = 30  # số ký tự tối thiểu để coi 1 trang PDF là "có text"
 
 
 @lru_cache(maxsize=1)
@@ -36,15 +38,26 @@ def ingest_pdf(
     chunk_overlap: int = 50,
     timings: dict | None = None,
 ):
-    """Đọc 1 file PDF, chia nhỏ, lưu vào Chroma. Trả về số chunk đã lưu.
-    Lưu ý: hàm này KHÔNG tự kiểm tra trùng lặp — việc kiểm tra file đã ingest
-    hay chưa (qua chat_db.document_exists) phải làm ở tầng gọi (app.py)."""
+    """Đọc 1 file PDF, chia nhỏ, lưu vào Chroma. Trả về dict
+    {chunks, empty_pages, content_hash}. empty_pages là các trang gần như
+    không có text (thường là bản scan/hình ảnh — text extraction sẽ kém).
+    Lưu ý: hàm này KHÔNG tự kiểm tra trùng lặp — việc kiểm tra theo
+    content_hash phải làm ở tầng gọi (app.py)."""
     ingest_started = time.perf_counter()
+
+    with open(file_path, "rb") as f:
+        content_hash = hashlib.sha256(f.read()).hexdigest()
 
     loader_started = time.perf_counter()
     loader = PyPDFLoader(file_path)
     documents = loader.load()
     loader_seconds = time.perf_counter() - loader_started
+
+    empty_pages = [
+        doc.metadata.get("page")
+        for doc in documents
+        if len((doc.page_content or "").strip()) < EMPTY_PAGE_THRESHOLD
+    ]
 
     # file_path may be a temporary upload path.  The stable original filename is
     # what conversations use to filter Chroma, so it must be stored in metadata.
@@ -82,7 +95,11 @@ def ingest_pdf(
             "chunks": len(chunks),
         })
 
-    return len(chunks)
+    return {
+        "chunks": len(chunks),
+        "empty_pages": empty_pages,
+        "content_hash": content_hash,
+    }
 
 
 def get_vectorstore():
@@ -91,6 +108,15 @@ def get_vectorstore():
         persist_directory=CHROMA_DIR,
         embedding_function=embedding_model
     )
+
+
+def delete_document_vectors(source_file: str):
+    """Xóa toàn bộ vector của 1 file — dùng khi re-ingest nội dung mới trùng tên file."""
+    vectorstore = Chroma(
+        persist_directory=CHROMA_DIR,
+        embedding_function=get_embedding_model(),
+    )
+    vectorstore.delete(where={"source_file": source_file})
 
 
 # ==================== hỏi đáp (streaming + multi-turn) ====================
@@ -190,6 +216,8 @@ def retrieve(
     ]
     bm25 = BM25Okapi([_tokenize(d.page_content) for d in corpus])
     bm25_scores = bm25.get_scores(_tokenize(question))
+    # Fuse cả danh sách đầy đủ (chuẩn RRF kiểu Elasticsearch) — thử nghiệm thực tế
+    # cho thấy chỉ fuse doc có score > 0 làm rơi 8/10 xuống 7/10 (eval Hit@3).
     ranked_idx = sorted(range(len(corpus)), key=lambda i: bm25_scores[i], reverse=True)
     bm25_docs = [corpus[i] for i in ranked_idx[: k * FETCH_MULT]]
 

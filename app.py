@@ -1,14 +1,31 @@
+import hashlib
+import hmac
 import streamlit as st
 import tempfile
 import os
 import time
-from rag_core import ingest_pdf, answer_stream, get_vectorstore
+from rag_core import ingest_pdf, answer_stream, get_vectorstore, delete_document_vectors
 from langchain_google_genai import ChatGoogleGenerativeAI
 import chat_db
 
 st.set_page_config(page_title="QA Agent", page_icon="📄", layout="wide")
 
 chat_db.init_db()
+
+# Gate mật khẩu tùy chọn: đặt APP_PASSWORD trong .env khi đưa link cho người khác.
+# Đây là gate kiểu demo — production cần đăng nhập thật theo user (xem README).
+APP_PASSWORD = os.getenv("APP_PASSWORD")
+
+if APP_PASSWORD and not st.session_state.get("authenticated"):
+    st.title("🔒 QA Agent")
+    pw = st.text_input("Nhập mật khẩu để tiếp tục:", type="password")
+    if st.button("Đăng nhập"):
+        if hmac.compare_digest(pw, APP_PASSWORD):
+            st.session_state.authenticated = True
+            st.rerun()
+        else:
+            st.error("Sai mật khẩu.")
+    st.stop()
 
 st.title("📄 QA Agent — Hỏi đáp tài liệu PDF")
 
@@ -38,18 +55,24 @@ with st.sidebar:
     if uploaded_file is not None:
         if st.button("Nạp tài liệu / Tạo cuộc trò chuyện mới"):
             file_name = uploaded_file.name
+            content_hash = hashlib.sha256(uploaded_file.getvalue()).hexdigest()
+            existing = chat_db.get_document(file_name)
 
-            if chat_db.document_exists(file_name):
-                st.info(f"'{file_name}' đã được nạp trước đó — dùng lại dữ liệu cũ, không nhúng lại.")
+            if existing and existing["content_hash"] == content_hash:
+                st.info(f"'{file_name}' đã được nạp trước đó với cùng nội dung — dùng lại dữ liệu cũ, không nhúng lại.")
             else:
+                if existing:
+                    # Trùng tên nhưng khác nội dung: thay thế vector cũ bằng nội dung mới
+                    delete_document_vectors(file_name)
+
                 with st.spinner("Đang xử lý tài liệu..."):
                     ingest_timings = {}
                     with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-                        tmp.write(uploaded_file.read())
+                        tmp.write(uploaded_file.getvalue())
                         tmp_path = tmp.name
 
                     try:
-                        num_chunks = ingest_pdf(
+                        result = ingest_pdf(
                             tmp_path,
                             source_file=file_name,
                             timings=ingest_timings,
@@ -57,11 +80,17 @@ with st.sidebar:
                     finally:
                         os.unlink(tmp_path)
 
-                    chat_db.add_document(file_name, num_chunks)
+                    chat_db.save_document(file_name, content_hash, result["chunks"])
                     # Reopen the persistent collection after adding new chunks.
                     load_vectorstore.clear()
 
-                st.success(f"Đã nạp xong! ({num_chunks} đoạn văn bản)")
+                st.success(f"Đã nạp xong! ({result['chunks']} đoạn văn bản)")
+                if result["empty_pages"]:
+                    st.warning(
+                        f"{len(result['empty_pages'])} trang gần như không có text "
+                        f"(trang {[p + 1 for p in result['empty_pages']]}) — có thể là bản "
+                        "scan/hình ảnh, trả lời sẽ kém trên các trang này."
+                    )
                 st.caption(
                     "⏱ Ingest: "
                     f"đọc {ingest_timings['loader_seconds']:.2f}s · "

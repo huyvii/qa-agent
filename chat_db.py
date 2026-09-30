@@ -1,9 +1,11 @@
+import os
 import sqlite3
 import json
 from datetime import datetime
 from typing import Optional
 
-DB_PATH = "chat_history.db"
+# Đường dẫn có thể override qua env — cần cho Docker volume và unit test
+DB_PATH = os.getenv("CHAT_DB_PATH", "chat_history.db")
 
 
 def _now() -> str:
@@ -25,14 +27,20 @@ def init_db():
     conn = get_connection()
     cur = conn.cursor()
 
-    # Bảng theo dõi các file đã được ingest vào Chroma (tránh nhúng trùng lặp)
+    # Bảng theo dõi các file đã được ingest vào Chroma (tránh nhúng trùng lặp).
+    # content_hash để phân biệt "trùng tên nhưng khác nội dung" — trường hợp phải re-ingest.
     cur.execute("""
         CREATE TABLE IF NOT EXISTS documents (
             source_file TEXT PRIMARY KEY,
             chunk_count INTEGER NOT NULL,
-            ingested_at TEXT NOT NULL
+            ingested_at TEXT NOT NULL,
+            content_hash TEXT
         )
     """)
+    # Migration cho DB tạo trước khi có cột content_hash
+    cols = [r["name"] for r in cur.execute("PRAGMA table_info(documents)").fetchall()]
+    if "content_hash" not in cols:
+        cur.execute("ALTER TABLE documents ADD COLUMN content_hash TEXT")
 
     # Mỗi conversation gắn với đúng 1 source_file -> dùng để filter khi search
     cur.execute("""
@@ -61,22 +69,22 @@ def init_db():
 
 # ==================== documents (tracking file đã ingest) ====================
 
-def document_exists(source_file: str) -> bool:
-    """Kiểm tra file này đã từng ingest vào Chroma chưa (theo tên file)."""
+def get_document(source_file: str) -> Optional[dict]:
+    """Lấy thông tin 1 file đã ingest (kèm content_hash)."""
     conn = get_connection()
     row = conn.execute(
-        "SELECT 1 FROM documents WHERE source_file = ?", (source_file,)
+        "SELECT * FROM documents WHERE source_file = ?", (source_file,)
     ).fetchone()
     conn.close()
-    return row is not None
+    return dict(row) if row else None
 
 
-def add_document(source_file: str, chunk_count: int):
+def save_document(source_file: str, content_hash: str, chunk_count: int):
     """Ghi nhận 1 file đã ingest xong. Gọi ngay sau khi ingest_pdf() chạy thành công."""
     conn = get_connection()
     conn.execute(
-        "INSERT OR REPLACE INTO documents (source_file, chunk_count, ingested_at) VALUES (?, ?, ?)",
-        (source_file, chunk_count, _now())
+        "INSERT OR REPLACE INTO documents (source_file, chunk_count, ingested_at, content_hash) VALUES (?, ?, ?, ?)",
+        (source_file, chunk_count, _now(), content_hash),
     )
     conn.commit()
     conn.close()
