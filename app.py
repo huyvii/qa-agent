@@ -1,6 +1,7 @@
 import streamlit as st
 import tempfile
 import os
+import time
 from rag_core import ingest_pdf, answer_question, get_vectorstore
 from langchain_google_genai import ChatGoogleGenerativeAI
 import chat_db
@@ -42,12 +43,17 @@ with st.sidebar:
                 st.info(f"'{file_name}' đã được nạp trước đó — dùng lại dữ liệu cũ, không nhúng lại.")
             else:
                 with st.spinner("Đang xử lý tài liệu..."):
+                    ingest_timings = {}
                     with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
                         tmp.write(uploaded_file.read())
                         tmp_path = tmp.name
 
                     try:
-                        num_chunks = ingest_pdf(tmp_path, source_file=file_name)
+                        num_chunks = ingest_pdf(
+                            tmp_path,
+                            source_file=file_name,
+                            timings=ingest_timings,
+                        )
                     finally:
                         os.unlink(tmp_path)
 
@@ -56,6 +62,14 @@ with st.sidebar:
                     load_vectorstore.clear()
 
                 st.success(f"Đã nạp xong! ({num_chunks} đoạn văn bản)")
+                st.caption(
+                    "⏱ Ingest: "
+                    f"đọc {ingest_timings['loader_seconds']:.2f}s · "
+                    f"chia đoạn {ingest_timings['splitter_seconds']:.2f}s · "
+                    f"load model {ingest_timings['embedding_model_load_seconds']:.2f}s · "
+                    f"embedding + lưu Chroma {ingest_timings['embedding_and_index_seconds']:.2f}s · "
+                    f"tổng {ingest_timings['total_seconds']:.2f}s"
+                )
 
             new_conv_id = chat_db.create_conversation(source_file=file_name)
             st.session_state.active_conversation_id = new_conv_id
@@ -113,13 +127,25 @@ else:
 
         with st.chat_message("assistant"):
             with st.spinner("Đang tìm câu trả lời..."):
+                request_started = time.perf_counter()
+                resource_started = time.perf_counter()
                 vectorstore = load_vectorstore()
                 llm = load_llm()
+                resource_load_seconds = time.perf_counter() - resource_started
+                answer_timings = {}
                 answer, sources = answer_question(
                     question, vectorstore, llm,
-                    source_file_filter=active_conv["source_file"]
+                    source_file_filter=active_conv["source_file"],
+                    timings=answer_timings,
                 )
             st.write(answer)
+            st.caption(
+                "⏱ "
+                f"load resource {resource_load_seconds:.2f}s · "
+                f"retrieval + query embedding {answer_timings['retrieval_seconds']:.2f}s · "
+                f"Gemini {answer_timings['llm_seconds']:.2f}s · "
+                f"tổng {time.perf_counter() - request_started:.2f}s"
+            )
             with st.expander("Nguồn tham khảo"):
                 for s in sources:
                     st.write(f"- {s}")

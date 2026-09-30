@@ -1,4 +1,6 @@
 import os
+import time
+from functools import lru_cache
 from dotenv import load_dotenv
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -13,7 +15,9 @@ EMBEDDING_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 CHROMA_DIR = "./chroma_db"
 
 
+@lru_cache(maxsize=1)
 def get_embedding_model():
+    """Load the local embedding model once per application process."""
     return HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL_NAME)
 
 
@@ -22,12 +26,17 @@ def ingest_pdf(
     source_file: str = None,
     chunk_size: int = 500,
     chunk_overlap: int = 50,
+    timings: dict | None = None,
 ):
     """Đọc 1 file PDF, chia nhỏ, lưu vào Chroma. Trả về số chunk đã lưu.
     Lưu ý: hàm này KHÔNG tự kiểm tra trùng lặp — việc kiểm tra file đã ingest
     hay chưa (qua chat_db.document_exists) phải làm ở tầng gọi (app.py)."""
+    ingest_started = time.perf_counter()
+
+    loader_started = time.perf_counter()
     loader = PyPDFLoader(file_path)
     documents = loader.load()
+    loader_seconds = time.perf_counter() - loader_started
 
     # file_path may be a temporary upload path.  The stable original filename is
     # what conversations use to filter Chroma, so it must be stored in metadata.
@@ -35,18 +44,36 @@ def ingest_pdf(
     for doc in documents:
         doc.metadata["source_file"] = file_name
 
+    splitter_started = time.perf_counter()
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=chunk_size,
         chunk_overlap=chunk_overlap
     )
     chunks = splitter.split_documents(documents)
+    splitter_seconds = time.perf_counter() - splitter_started
 
+    model_started = time.perf_counter()
     embedding_model = get_embedding_model()
+    embedding_model_load_seconds = time.perf_counter() - model_started
+
+    indexing_started = time.perf_counter()
     Chroma.from_documents(
         documents=chunks,
         embedding=embedding_model,
         persist_directory=CHROMA_DIR
     )
+    embedding_and_index_seconds = time.perf_counter() - indexing_started
+
+    if timings is not None:
+        timings.update({
+            "loader_seconds": loader_seconds,
+            "splitter_seconds": splitter_seconds,
+            "embedding_model_load_seconds": embedding_model_load_seconds,
+            "embedding_and_index_seconds": embedding_and_index_seconds,
+            "total_seconds": time.perf_counter() - ingest_started,
+            "chunks": len(chunks),
+        })
+
     return len(chunks)
 
 
@@ -58,7 +85,14 @@ def get_vectorstore():
     )
 
 
-def answer_question(question: str, vectorstore, llm, source_file_filter: str = None, k: int = 3):
+def answer_question(
+    question: str,
+    vectorstore,
+    llm,
+    source_file_filter: str = None,
+    k: int = 3,
+    timings: dict | None = None,
+):
     """Search + gọi Gemini, trả về (câu trả lời, danh sách nguồn).
 
     source_file_filter: nếu truyền vào, chỉ search trong phạm vi file đó
@@ -69,7 +103,11 @@ def answer_question(question: str, vectorstore, llm, source_file_filter: str = N
     if source_file_filter:
         search_kwargs["filter"] = {"source_file": source_file_filter}
 
+    question_started = time.perf_counter()
+
+    retrieval_started = time.perf_counter()
     results = vectorstore.similarity_search(question, **search_kwargs)
+    retrieval_seconds = time.perf_counter() - retrieval_started
     context = "\n\n".join([doc.page_content for doc in results])
 
     prompt = ChatPromptTemplate.from_template(
@@ -94,7 +132,9 @@ Câu hỏi: {question}
 Trả lời:"""
     )
     chain = prompt | llm
+    llm_started = time.perf_counter()
     response = chain.invoke({"context": context, "question": question})
+    llm_seconds = time.perf_counter() - llm_started
 
     # thay vì string thuần -> phải chuẩn hóa lại thành text trước khi dùng/lưu DB
     if isinstance(response.content, str):
@@ -109,4 +149,13 @@ Trả lời:"""
         f"{doc.metadata.get('source_file', '?')} - trang {doc.metadata.get('page', '?')}"
         for doc in results
     ]
+
+    if timings is not None:
+        timings.update({
+            "retrieval_seconds": retrieval_seconds,
+            "llm_seconds": llm_seconds,
+            "total_seconds": time.perf_counter() - question_started,
+            "retrieved_chunks": len(results),
+        })
+
     return answer_text, sources
