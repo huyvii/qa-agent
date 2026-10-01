@@ -87,3 +87,30 @@ def test_retrieve_falls_back_to_vector_when_corpus_empty():
     results = rag_core.retrieve("bachelor", vs, source_file_filter="a.pdf", k=1)
 
     assert results[0].page_content == CORPUS[0].page_content
+
+
+class _FakeReranker:
+    """Cross-encoder giả: chấm điểm theo nội dung đoạn để kiểm soát thứ hạng."""
+
+    def __init__(self, score_fn):
+        self.score_fn = score_fn
+
+    def predict(self, pairs):
+        return [self.score_fn(doc_text) for _, doc_text in pairs]
+
+
+def test_retrieve_reranker_reorders_fused_candidates():
+    # Vector xếp C cuối cùng, nhưng reranker chấm C cao nhất -> C phải lên đầu
+    vs = _FakeVectorStore(vec_ranked=[CORPUS[0], CORPUS[1], CORPUS[2]], corpus=CORPUS)
+    reranker = _FakeReranker(
+        lambda text: 3 if "Tele-Manipulator" in text else (2 if "thesis" in text else 1)
+    )
+
+    results = rag_core.retrieve(
+        "bachelor thesis", vs, source_file_filter="a.pdf", k=2, reranker=reranker
+    )
+
+    assert [d.page_content for d in results] == [
+        CORPUS[2].page_content,
+        CORPUS[1].page_content,
+    ]

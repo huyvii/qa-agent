@@ -19,6 +19,7 @@ from langchain_chroma import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import rag_core  # noqa: E402
 from rag_core import retrieve  # noqa: E402 — đo đúng pipeline thật, không phải similarity_search thuần
 
 
@@ -102,7 +103,7 @@ def normalize(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-def evaluate(source_file: str, chroma_dir: Path, k: int) -> dict:
+def evaluate(source_file: str, chroma_dir: Path, k: int, reranker=None) -> dict:
     embeddings = HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL_NAME)
     vectorstore = Chroma(
         persist_directory=str(chroma_dir), embedding_function=embeddings
@@ -110,7 +111,9 @@ def evaluate(source_file: str, chroma_dir: Path, k: int) -> dict:
 
     cases = []
     for case in TEST_CASES:
-        documents = retrieve(case["question"], vectorstore, source_file, k=k)
+        documents = retrieve(
+            case["question"], vectorstore, source_file, k=k, reranker=reranker
+        )
         expected = normalize(case["expected_evidence"])
         retrieved = [
             {
@@ -132,6 +135,7 @@ def evaluate(source_file: str, chroma_dir: Path, k: int) -> dict:
     return {
         "metric": f"retrieval_hit_at_{k}",
         "retrieval": "hybrid: multilingual vector + BM25, fused by RRF (rag_core.retrieve)",
+        "reranker": rag_core.RERANKER_MODEL_NAME if reranker is not None else None,
         "definition": (
             f"A test case is a hit when at least one of the top {k} retrieved chunks "
             "contains its predefined expected evidence text."
@@ -151,6 +155,11 @@ def main() -> None:
     parser.add_argument("--source-file", default=DEFAULT_SOURCE_FILE)
     parser.add_argument("--chroma-dir", type=Path, default=DEFAULT_CHROMA_DIR)
     parser.add_argument("--k", type=int, default=3)
+    parser.add_argument(
+        "--rerank",
+        action="store_true",
+        help="Apply the cross-encoder reranker from rag_core.get_reranker().",
+    )
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     args = parser.parse_args()
 
@@ -159,7 +168,8 @@ def main() -> None:
     if not args.chroma_dir.exists():
         parser.error(f"Chroma directory does not exist: {args.chroma_dir}")
 
-    result = evaluate(args.source_file, args.chroma_dir, args.k)
+    reranker = rag_core.get_reranker() if args.rerank else None
+    result = evaluate(args.source_file, args.chroma_dir, args.k, reranker=reranker)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     print(

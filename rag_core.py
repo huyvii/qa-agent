@@ -12,6 +12,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.documents import Document
 from langchain_core.prompts import ChatPromptTemplate
 from rank_bm25 import BM25Okapi
+from sentence_transformers import CrossEncoder
 
 load_dotenv()
 
@@ -29,6 +30,19 @@ EMPTY_PAGE_THRESHOLD = 30  # số ký tự tối thiểu để coi 1 trang PDF l
 def get_embedding_model():
     """Load the local embedding model once per application process."""
     return HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL_NAME)
+
+
+# Reranker đa ngữ (cross-encoder chấm điểm cặp câu hỏi-đoạn cùng lúc) — phân biệt
+# "liên quan" vs "liên quan nhất" tốt hơn embedding. Base nhẹ (~1.1GB RAM) để CPU
+# và Streamlit Cloud free tier chịu được; nâng v2-m3 chỉ khi base đo xong vẫn trượt.
+RERANKER_MODEL_NAME = os.getenv("RERANKER_MODEL_NAME", "BAAI/bge-reranker-base")
+RERANK_POOL_SIZE = 10  # số candidate từ RRF đưa vào cross-encoder
+
+
+@lru_cache(maxsize=1)
+def get_reranker():
+    """Load cross-encoder reranker 1 lần mỗi process (tải model nặng, gọi lần đầu chậm)."""
+    return CrossEncoder(RERANKER_MODEL_NAME)
 
 
 def ingest_pdf(
@@ -191,37 +205,54 @@ def retrieve(
     source_file_filter: str | None = None,
     k: int = 3,
     hybrid: bool = True,
+    reranker=None,
+    timings: dict | None = None,
 ):
     """Hybrid retrieval: semantic search (vector) + BM25 (lexical), hợp nhất bằng RRF.
 
     Hai nhánh gãy ở chỗ khác nhau: vector bắt được câu hỏi diễn đạt khác cách viết
     trong tài liệu nhưng hay trượt từ khóa chính xác (số liệu, tên riêng); BM25
-    ngược lại. Eval thực nghiệm: vector EN 8/10, vector multilingual 6/10, hybrid cao hơn cả hai.
+    ngược lại. Eval thực nghiệm: vector EN 8/10, vector multilingual 6/10, hybrid 8/10.
+
+    reranker: cross-encoder (CrossEncoder từ rag_core.get_reranker) chấm lại pool
+    RRF (~10 candidate) rồi mới lấy top k — mặc định None để unit test/eval A/B
+    không phải load model. timings ghi rerank_seconds khi có reranker.
     """
     where = {"source_file": source_file_filter} if source_file_filter else None
-    vec_docs = vectorstore.similarity_search(question, k=k * FETCH_MULT, filter=where)
+    branch_n = k * FETCH_MULT
+    pool_size = RERANK_POOL_SIZE if reranker is not None else k
+    vec_docs = vectorstore.similarity_search(question, k=branch_n, filter=where)
     if not hybrid:
-        return vec_docs[:k]
+        candidates = vec_docs[:pool_size]
+    else:
+        # BM25 chạy trên toàn bộ chunk của file — với prototype (vài trăm chunk) là đủ;
+        # corpus lớn thì cần đưa BM25 sang index riêng (Elasticsearch/SQLite FTS).
+        data = vectorstore.get(where=where or {}, include=["documents", "metadatas"])
+        texts = data.get("documents") or []
+        if not texts:
+            candidates = vec_docs[:pool_size]
+        else:
+            corpus = [
+                Document(page_content=t or "", metadata=m or {})
+                for t, m in zip(texts, data.get("metadatas") or [])
+            ]
+            bm25 = BM25Okapi([_tokenize(d.page_content) for d in corpus])
+            bm25_scores = bm25.get_scores(_tokenize(question))
+            # Fuse cả danh sách đầy đủ (chuẩn RRF kiểu Elasticsearch) — thử nghiệm thực tế
+            # cho thấy chỉ fuse doc có score > 0 làm rơi 8/10 xuống 7/10 (eval Hit@3).
+            ranked_idx = sorted(range(len(corpus)), key=lambda i: bm25_scores[i], reverse=True)
+            bm25_docs = [corpus[i] for i in ranked_idx[:branch_n]]
+            candidates = _rrf_fuse(vec_docs, bm25_docs, pool_size)
 
-    # BM25 chạy trên toàn bộ chunk của file — với prototype (vài trăm chunk) là đủ;
-    # corpus lớn thì cần đưa BM25 sang index riêng (Elasticsearch/SQLite FTS).
-    data = vectorstore.get(where=where or {}, include=["documents", "metadatas"])
-    texts = data.get("documents") or []
-    if not texts:
-        return vec_docs[:k]
+    if reranker is None:
+        return candidates[:k]
 
-    corpus = [
-        Document(page_content=t or "", metadata=m or {})
-        for t, m in zip(texts, data.get("metadatas") or [])
-    ]
-    bm25 = BM25Okapi([_tokenize(d.page_content) for d in corpus])
-    bm25_scores = bm25.get_scores(_tokenize(question))
-    # Fuse cả danh sách đầy đủ (chuẩn RRF kiểu Elasticsearch) — thử nghiệm thực tế
-    # cho thấy chỉ fuse doc có score > 0 làm rơi 8/10 xuống 7/10 (eval Hit@3).
-    ranked_idx = sorted(range(len(corpus)), key=lambda i: bm25_scores[i], reverse=True)
-    bm25_docs = [corpus[i] for i in ranked_idx[: k * FETCH_MULT]]
-
-    return _rrf_fuse(vec_docs, bm25_docs, k)
+    rerank_started = time.perf_counter()
+    scores = reranker.predict([(question, d.page_content) for d in candidates])
+    if timings is not None:
+        timings["rerank_seconds"] = time.perf_counter() - rerank_started
+    order = sorted(range(len(candidates)), key=lambda i: scores[i], reverse=True)
+    return [candidates[i] for i in order[:k]]
 
 
 def answer_stream(
@@ -232,6 +263,7 @@ def answer_stream(
     k: int = 3,
     history: list | None = None,
     timings: dict | None = None,
+    reranker=None,
 ):
     """Chuẩn bị retrieval rồi trả về (token_generator, sources).
 
@@ -249,7 +281,10 @@ def answer_stream(
         timings["standalone_question"] = standalone
 
     retrieval_started = time.perf_counter()
-    results = retrieve(standalone, vectorstore, source_file_filter, k)
+    results = retrieve(
+        standalone, vectorstore, source_file_filter, k,
+        reranker=reranker, timings=timings,
+    )
     if timings is not None:
         timings["retrieval_seconds"] = time.perf_counter() - retrieval_started
 
@@ -303,10 +338,11 @@ def answer_question(
     k: int = 3,
     history: list | None = None,
     timings: dict | None = None,
+    reranker=None,
 ):
     """Phiên bản không streaming của answer_stream — tiện cho test/eval."""
     generator, sources = answer_stream(
-        question, vectorstore, llm, source_file_filter, k, history, timings
+        question, vectorstore, llm, source_file_filter, k, history, timings, reranker
     )
     answer_text = "".join(generator)
     return answer_text, sources

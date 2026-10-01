@@ -4,7 +4,13 @@ import streamlit as st
 import tempfile
 import os
 import time
-from rag_core import ingest_pdf, answer_stream, get_vectorstore, delete_document_vectors
+from rag_core import (
+    ingest_pdf,
+    answer_stream,
+    get_vectorstore,
+    delete_document_vectors,
+    get_reranker,
+)
 from langchain_google_genai import ChatGoogleGenerativeAI
 import chat_db
 
@@ -162,6 +168,7 @@ else:
             resource_started = time.perf_counter()
             vectorstore = load_vectorstore()
             llm = load_llm()
+            reranker = get_reranker()
             resource_load_seconds = time.perf_counter() - resource_started
             answer_timings = {}
             with st.spinner("Đang tìm câu trả lời..."):
@@ -170,6 +177,7 @@ else:
                     source_file_filter=active_conv["source_file"],
                     history=history,
                     timings=answer_timings,
+                    reranker=reranker,
                 )
             # stream từng token; write_stream trả về text đầy đủ để lưu DB
             full_answer = st.write_stream(answer_gen)
@@ -179,6 +187,7 @@ else:
                 f"load resource {resource_load_seconds:.2f}s · "
                 f"viết lại câu hỏi {condense_seconds:.2f}s · "
                 f"retrieval {answer_timings['retrieval_seconds']:.2f}s · "
+                f"rerank {answer_timings.get('rerank_seconds', 0.0):.2f}s · "
                 f"Gemini {answer_timings['llm_seconds']:.2f}s · "
                 f"tổng {time.perf_counter() - request_started:.2f}s"
             )
