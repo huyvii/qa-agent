@@ -27,6 +27,7 @@
 - Nhiều cuộc trò chuyện; mỗi cuộc gắn với một PDF. Retrieval lọc theo `source_file` để không lẫn dữ liệu giữa các file.
 - Hiển thị nguồn tham khảo gồm tên file và số trang.
 - Trả lời stream từng token; câu hỏi nối tiếp được viết lại thành câu độc lập trước khi tra cứu để giữ ngữ cảnh hội thoại (multi-turn).
+- Cross-encoder reranker đa ngữ xếp lại top-10 candidate trước khi đưa vào prompt.
 - Nhận diện tài liệu bằng hash nội dung (SHA-256): cùng file không nhúng lại; trùng tên nhưng khác nội dung tự động xóa vector cũ và nạp lại.
 - Trang PDF gần như không có text (bản scan/hình ảnh) được cảnh báo ngay khi ingest.
 - Gate mật khẩu tùy chọn qua biến `APP_PASSWORD` — bật khi đưa link cho người khác.
@@ -39,6 +40,7 @@
 PDF → tách chunk → embedding multilingual (paraphrase-multilingual-MiniLM-L12-v2)
     → lưu vào ChromaDB kèm metadata (source_file, page)
     → hybrid retrieval: vector + BM25, hợp nhất bằng RRF, lọc theo source_file
+    → cross-encoder rerank top-10 candidate (bge-reranker-base)
     → ghép context vào prompt → Gemini sinh câu trả lời (streaming)
 ```
 
@@ -56,7 +58,7 @@ messages        — câu hỏi, câu trả lời và nguồn tham khảo
 | `rag_core.py` | Ingest, retrieval và gọi Gemini |
 | `chat_db.py` | Quản lý SQLite |
 
-**Công nghệ:** Python, LangChain, ChromaDB, sentence-transformers, BM25 (hybrid retrieval), Google Gemini API, SQLite và Streamlit.
+**Công nghệ:** Python, LangChain, ChromaDB, sentence-transformers, BM25 (hybrid retrieval), bge-reranker-base (cross-encoder), Google Gemini API, SQLite và Streamlit.
 
 ## Quyết định thiết kế
 
@@ -102,8 +104,9 @@ Upload PDF ở sidebar, tạo cuộc trò chuyện mới và đặt câu hỏi. 
 | Vector all-MiniLM-L6-v2 (English-only) | 8/10 |
 | Vector multilingual thuần | 6/10 |
 | Hybrid: multilingual vector + BM25, hợp nhất RRF | 8/10 |
+| **Hybrid + reranker bge-reranker-base** | **10/10** |
 
-Điểm thú vị: multilingual thuần đỗ 2 case luận văn mà model English trượt (đúng nghĩa Việt↔Anh) nhưng lại trượt các case định danh (tên, GPA) cần khớp từ khóa chính xác. Hai nhánh gãy ở chỗ khác nhau — hybrid gom được ưu điểm cả hai. 2 case còn fail do chunk không chứa từ khóa nào của câu hỏi tiếng Việt; hướng giải quyết là query translation hoặc reranker đa ngữ.
+Điểm thú vị: multilingual thuần đỗ 2 case luận văn mà model English trượt (đúng nghĩa Việt↔Anh) nhưng lại trượt các case định danh (tên, GPA) cần khớp từ khóa chính xác. Hai nhánh gãy ở chỗ khác nhau — hybrid gom được ưu điểm cả hai. 2 case cuối cùng có evidence nằm ở hạng 4-5: cross-encoder (chấm điểm cặp câu hỏi-đoạn cùng lúc, khác cơ chế với embedding so khoảng cách độc lập) kéo chúng lên top-3 → 10/10, với chi phí ~0.85s/câu trên CPU.
 
 ## Cho người khác dùng (deploy)
 
@@ -129,7 +132,7 @@ Bộ test phủ logic thuần (tokenize, RRF fusion, chuẩn hóa text), SQLite 
 
 ## Hướng phát triển
 
-- Query translation hoặc reranker đa ngữ (bge-reranker) cho 2 case retrieval còn fail; mở rộng bộ eval ra nhiều loại PDF.
+- Mở rộng bộ eval ra nhiều loại PDF và domain; Gemini multimodal cho trang scan/hình ảnh; tối ưu thinking_level của Gemini theo độ khó câu hỏi.
 - Thêm Parent Document Retriever: search bằng chunk nhỏ nhưng gửi context lớn hơn cho Gemini.
 - Bổ sung xử lý lỗi và unit test.
 - Xây dựng bộ đánh giá trên nhiều loại tài liệu PDF.
