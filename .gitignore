@@ -1,7 +1,9 @@
 venv/
 __pycache__/
 *.pyc
+.pytest_cache/
 .env
 chroma_db/
 chat_history.db
 data/*.pdf
+evaluation/results/

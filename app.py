@@ -1,12 +1,13 @@
 import hashlib
 import hmac
-import streamlit as st
-import tempfile
 import os
+import tempfile
 import time
+import streamlit as st
 from rag_core import (
     ingest_pdf,
     answer_stream,
+    filter_sources_for_answer,
     get_vectorstore,
     delete_document_vectors,
     get_reranker,
@@ -17,6 +18,7 @@ import chat_db
 st.set_page_config(page_title="QA Agent", page_icon="📄", layout="wide")
 
 chat_db.init_db()
+
 
 # Gate mật khẩu tùy chọn: đặt APP_PASSWORD trong .env khi đưa link cho người khác.
 # Đây là gate kiểu demo — production cần đăng nhập thật theo user (xem README).
@@ -87,6 +89,13 @@ def request_error_message(error: Exception) -> str:
     if status == "404" or "model not found" in message:
         return "Không tìm thấy model Gemini. Kiểm tra giá trị GEMINI_MODEL trong cấu hình."
     return f"Yêu cầu thất bại ({type(error).__name__}). Kiểm tra log của Streamlit để xem chi tiết."
+
+
+def _format_conversation_title(question: str, max_chars: int = 42) -> str:
+    cleaned = " ".join((question or "").split())
+    if len(cleaned) <= max_chars:
+        return cleaned
+    return f"{cleaned[:max_chars - 1].rstrip()}…"
 
 
 if "active_conversation_id" not in st.session_state:
@@ -180,9 +189,21 @@ with st.sidebar:
         st.caption("Chưa có tài liệu nào trong kho.")
     for document in documents:
         source_file = document["source_file"]
-        info_col, action_col = st.columns([5, 1])
+        info_col, chat_col, action_col = st.columns([4, 1, 1])
         info_col.caption(f"{source_file} · {document['chunk_count']} đoạn")
-        if action_col.button("Xóa", key=f"delete_doc_{source_file}"):
+        if chat_col.button(
+            "➕",
+            key=f"new_chat_{source_file}",
+            help=f"Tạo cuộc trò chuyện mới với {source_file}",
+        ):
+            new_conv_id = chat_db.create_conversation(source_file=source_file)
+            st.session_state.active_conversation_id = new_conv_id
+            st.rerun()
+        if action_col.button(
+            "🗑️",
+            key=f"delete_doc_{source_file}",
+            help=f"Xóa tài liệu {source_file}",
+        ):
             st.session_state.pending_delete_document = source_file
             st.rerun()
 
@@ -223,12 +244,17 @@ with st.sidebar:
 
         with col1:
             label = f"{'🟢 ' if is_active else ''}{conv['title']}"
-            if st.button(label, key=f"conv_{conv['id']}", use_container_width=True):
+            if st.button(
+                label,
+                key=f"conv_{conv['id']}",
+                help=f"Tài liệu: {conv['source_file']}",
+                use_container_width=True,
+            ):
                 st.session_state.active_conversation_id = conv["id"]
                 st.rerun()
 
         with col2:
-            if st.button("🗑️", key=f"del_{conv['id']}"):
+            if st.button("🗑️", key=f"del_{conv['id']}", help="Xóa cuộc trò chuyện"):
                 chat_db.delete_conversation(conv["id"])
                 if is_active:
                     st.session_state.active_conversation_id = None
@@ -265,22 +291,23 @@ else:
         # Lịch sử đầy đủ nằm trong SQLite; rag_core chỉ gửi vài lượt phù hợp cho Gemini.
         history = [{"role": m["role"], "content": m["content"]} for m in messages]
 
-        chat_db.save_message(active_id, "user", question)
         with st.chat_message("user"):
             st.write(question)
 
         try:
             with st.chat_message("assistant"):
                 request_started = time.perf_counter()
-                resource_started = time.perf_counter()
-                vectorstore = load_vectorstore()
-                llm = load_llm()
-                reranker = get_reranker()
-                resource_load_seconds = time.perf_counter() - resource_started
                 answer_timings = {}
                 with st.spinner("Đang tìm câu trả lời..."):
+                    resource_started = time.perf_counter()
+                    vectorstore = load_vectorstore()
+                    llm = load_llm()
+                    reranker = get_reranker()
+                    resource_load_seconds = time.perf_counter() - resource_started
                     answer_gen, sources = answer_stream(
-                        question, vectorstore, llm,
+                        question,
+                        vectorstore,
+                        llm,
                         source_file_filter=active_conv["source_file"],
                         history=history,
                         timings=answer_timings,
@@ -288,6 +315,7 @@ else:
                     )
                 # stream từng token; write_stream trả về text đầy đủ để lưu DB
                 full_answer = st.write_stream(answer_gen)
+                shown_sources = filter_sources_for_answer(full_answer, sources)
                 memory_seconds = answer_timings.get("memory_seconds", 0.0)
                 st.caption(
                     "⏱ "
@@ -298,10 +326,18 @@ else:
                     f"Gemini {answer_timings['llm_seconds']:.2f}s · "
                     f"tổng {time.perf_counter() - request_started:.2f}s"
                 )
-                with st.expander("Nguồn tham khảo"):
-                    for s in sources:
-                        st.write(f"- {s}")
-            chat_db.save_message(active_id, "assistant", full_answer, sources)
+                if shown_sources:
+                    with st.expander("Nguồn tham khảo"):
+                        for s in shown_sources:
+                            st.write(f"- {s}")
+
+            # Chỉ lưu cặp câu hỏi - trả lời khi yêu cầu thành công để tránh tin nhắn lỗi mồ côi.
+            chat_db.save_message(active_id, "user", question)
+            chat_db.save_message(active_id, "assistant", full_answer, shown_sources)
+            if not messages and active_conv["title"] == active_conv["source_file"]:
+                chat_db.update_conversation_title(
+                    active_id, _format_conversation_title(question)
+                )
         except Exception as exc:
             with st.chat_message("assistant"):
                 st.error(request_error_message(exc))

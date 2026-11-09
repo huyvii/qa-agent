@@ -1,4 +1,5 @@
 import hashlib
+import math
 import os
 import re
 import time
@@ -28,6 +29,16 @@ CHROMA_DIR = os.getenv("CHROMA_DIR", str(PROJECT_DIR / "chroma_db"))
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
 GEMINI_MAX_RETRIES = os.getenv("GEMINI_MAX_RETRIES", "2")
 EMPTY_PAGE_THRESHOLD = 30  # số ký tự tối thiểu để coi 1 trang PDF là "có text"
+OUT_OF_SCOPE_PREFIX = "Ngoài phạm vi tài liệu:"
+
+
+def compute_file_sha256(file_path: str | Path) -> str:
+    """Compute SHA-256 hex digest of a file in streaming 1 MB chunks."""
+    digest = hashlib.sha256()
+    with open(file_path, "rb") as f:
+        for block in iter(lambda: f.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
 
 def create_llm(
@@ -60,11 +71,31 @@ def get_embedding_model():
     return HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL_NAME)
 
 
-# Reranker đa ngữ (cross-encoder chấm điểm cặp câu hỏi-đoạn cùng lúc) — phân biệt
-# "liên quan" vs "liên quan nhất" tốt hơn embedding. Base nhẹ (~1.1GB RAM) để CPU
-# và Streamlit Cloud free tier chịu được; nâng v2-m3 chỉ khi base đo xong vẫn trượt.
-RERANKER_MODEL_NAME = os.getenv("RERANKER_MODEL_NAME", "BAAI/bge-reranker-base")
+# Reranker đa ngữ thực sự (mMARCO 14 ngôn ngữ, kiến trúc MiniLM-L12 ~470MB) — chấm
+# điểm cặp (câu hỏi, đoạn văn) cùng lúc qua full self-attention, nhẹ và nhanh hơn ~3.2x
+# trên CPU so với bge-reranker-base (vốn chỉ train EN/ZH). Có GPU có thể đổi sang bge-reranker-v2-m3.
+RERANKER_MODEL_NAME = os.getenv(
+    "RERANKER_MODEL_NAME",
+    "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1",
+)
 RERANK_POOL_SIZE = 10  # số candidate từ RRF đưa vào cross-encoder
+
+
+class _LuceneBM25(BM25Okapi):
+    """BM25 dùng IDF chuẩn Lucene log(1 + (N - df + 0.5)/(df + 0.5)) luôn dương.
+
+    BM25Okapi gốc cho IDF <= 0 khi df >= N/2 (đặc biệt N=1 hoặc N=2 chunk/turn),
+    làm điểm khớp từ khóa bằng 0 hoặc âm trên PDF ngắn và lịch sử hội thoại ít lượt.
+    """
+
+    def _calc_idf(self, nd):
+        self.average_idf = 0.0
+        for word, freq in nd.items():
+            self.idf[word] = math.log(
+                1.0 + (self.corpus_size - freq + 0.5) / (freq + 0.5)
+            )
+
+
 _BM25_CACHE: dict[tuple[int, str | None], tuple[object, list[Document], BM25Okapi | None]] = {}
 
 
@@ -89,15 +120,10 @@ def ingest_pdf(
     """Đọc 1 file PDF, chia nhỏ, lưu vào Chroma. Trả về dict
     {chunks, empty_pages, content_hash}. empty_pages là các trang gần như
     không có text (thường là bản scan/hình ảnh — text extraction sẽ kém).
-    Lưu ý: hàm này KHÔNG tự kiểm tra trùng lặp — việc kiểm tra theo
-    content_hash phải làm ở tầng gọi (app.py)."""
+    Chunk ID được băm tất định theo (source_file, content_hash, idx) để tránh
+    nhân bản vector nếu nạp lặp lại cùng một phiên bản tài liệu."""
     ingest_started = time.perf_counter()
-
-    digest = hashlib.sha256()
-    with open(file_path, "rb") as f:
-        for block in iter(lambda: f.read(1024 * 1024), b""):
-            digest.update(block)
-    content_hash = digest.hexdigest()
+    content_hash = compute_file_sha256(file_path)
 
     loader_started = time.perf_counter()
     loader = PyPDFLoader(file_path)
@@ -112,7 +138,7 @@ def ingest_pdf(
         if len((doc.page_content or "").strip()) < EMPTY_PAGE_THRESHOLD
     ]
 
-    # file_path may be a temporary upload path.  The stable original filename is
+    # file_path may be a temporary upload path. The stable original filename is
     # what conversations use to filter Chroma, so it must be stored in metadata.
     file_name = source_file or os.path.basename(file_path)
     for doc in documents:
@@ -122,7 +148,7 @@ def ingest_pdf(
     splitter_started = time.perf_counter()
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=chunk_size,
-        chunk_overlap=chunk_overlap
+        chunk_overlap=chunk_overlap,
     )
     chunks = splitter.split_documents(documents)
     splitter_seconds = time.perf_counter() - splitter_started
@@ -135,11 +161,16 @@ def ingest_pdf(
     embedding_model = get_embedding_model()
     embedding_model_load_seconds = time.perf_counter() - model_started
 
+    chunk_ids = [
+        hashlib.sha256(f"{file_name}:{content_hash}:{idx}".encode("utf-8")).hexdigest()
+        for idx in range(len(chunks))
+    ]
     indexing_started = time.perf_counter()
     Chroma.from_documents(
         documents=chunks,
         embedding=embedding_model,
-        persist_directory=CHROMA_DIR
+        ids=chunk_ids,
+        persist_directory=CHROMA_DIR,
     )
     clear_retrieval_cache()
     embedding_and_index_seconds = time.perf_counter() - indexing_started
@@ -165,7 +196,7 @@ def get_vectorstore():
     embedding_model = get_embedding_model()
     return Chroma(
         persist_directory=CHROMA_DIR,
-        embedding_function=embedding_model
+        embedding_function=embedding_model,
     )
 
 
@@ -197,9 +228,19 @@ HISTORY_TURNS = 4          # số lượt chat gần nhất luôn được đưa
 MAX_HISTORY_CHARS = 500    # giới hạn nội dung mỗi tin nhắn
 MEMORY_LOOKBACK_TURNS = 60
 MEMORY_RELEVANT_TURNS = 2
-FOLLOW_UP_MARKERS = re.compile(
-    r"\b(còn|vậy|thế|nó|đó|đấy|cái này|cái đó|như trên|tiếp theo|"
-    r"what about|how about|why|and|it|that|those|they|there|same|again|more)\b",
+
+FOLLOW_UP_PREFIX = re.compile(
+    r"^\s*(còn|thế còn|vậy còn|vậy|thế|tiếp theo|ngoài ra|what about|how about|and what|so what)\b",
+    re.IGNORECASE,
+)
+FOLLOW_UP_STRONG_ANAPHORA = re.compile(
+    r"\b(cái này|cái đó|cái đấy|phần này|phần đó|mục này|mục đó|bài này|bài đó|"
+    r"điểm này|điểm đó|người này|người đó|trường hợp này|trường hợp đó|"
+    r"ở trên|như trên|nêu trên|vừa nêu|nó)\b",
+    re.IGNORECASE,
+)
+FOLLOW_UP_WEAK_PRONOUN = re.compile(
+    r"\b(đó|đấy|this|these|those|it|they|them|above|same)\b",
     re.IGNORECASE,
 )
 
@@ -247,21 +288,35 @@ def _format_history_turn(turn: list[dict]) -> str:
     )
 
 
+def _is_follow_up_question(question: str) -> bool:
+    """Nhận diện câu hỏi nối tiếp thiếu chủ thể (tỉnh lược hoặc dùng đại từ quy chiếu)."""
+    tokens = _tokenize(question)
+    if not tokens:
+        return False
+    if len(tokens) <= 3:
+        return True
+    if FOLLOW_UP_PREFIX.search(question) or FOLLOW_UP_STRONG_ANAPHORA.search(question):
+        return True
+    return len(tokens) <= 12 and bool(FOLLOW_UP_WEAK_PRONOUN.search(question))
+
+
 def condense_question(question: str, history: list | None, llm=None) -> str:
-    """Build a local retrieval query for short follow-ups without another API call."""
-    if not history or len(_tokenize(question)) > 7 and not FOLLOW_UP_MARKERS.search(question):
+    """Build a local retrieval query for follow-ups without another API call."""
+    if not history or not _is_follow_up_question(question):
         return question
-    previous_user_question = next(
-        (
-            (message.get("content") or "").strip()
-            for message in reversed(history)
-            if message.get("role") == "user" and (message.get("content") or "").strip()
-        ),
-        "",
+    user_messages = [
+        (message.get("content") or "").strip()
+        for message in reversed(history)
+        if message.get("role") == "user" and (message.get("content") or "").strip()
+    ]
+    if not user_messages:
+        return question
+    # Ưu tiên câu hỏi độc lập gần nhất làm mỏ neo chủ đề cho chuỗi câu nối tiếp nhiều lượt
+    anchor = next(
+        (msg for msg in user_messages if not _is_follow_up_question(msg)),
+        user_messages[0],
     )
-    if not previous_user_question:
-        return question
-    return f"{previous_user_question[:MAX_HISTORY_CHARS]}\n{question}"
+    return f"{anchor[:MAX_HISTORY_CHARS]}\n{question}"
 
 
 def build_conversation_memory(
@@ -288,7 +343,7 @@ def build_conversation_memory(
             if _tokenize(_format_history_turn(turn))
         ]
         if indexed_turns:
-            memory_index = BM25Okapi(
+            memory_index = _LuceneBM25(
                 [_tokenize(text) for _, text in indexed_turns]
             )
             scores = memory_index.get_scores(query_tokens)
@@ -314,7 +369,7 @@ def build_conversation_memory(
 
 
 RRF_K = 60          # hằng số của Reciprocal Rank Fusion
-FETCH_MULT = 3      # mỗi nhánh lấy k*FETCH_MULT kết quả rồi mới fuse
+FETCH_MULT = 3      # mỗi nhánh lấy tối thiểu k*FETCH_MULT kết quả rồi mới fuse
 
 
 def _tokenize(text: str) -> list[str]:
@@ -336,7 +391,7 @@ def _get_bm25_corpus(vectorstore, where: dict | None):
         Document(page_content=text or "", metadata=metadata or {})
         for text, metadata in zip(texts, metadatas)
     ]
-    bm25 = BM25Okapi([_tokenize(doc.page_content) for doc in corpus]) if corpus else None
+    bm25 = _LuceneBM25([_tokenize(doc.page_content) for doc in corpus]) if corpus else None
     _BM25_CACHE[cache_key] = (vectorstore, corpus, bm25)
     if len(_BM25_CACHE) > 16:
         _BM25_CACHE.pop(next(iter(_BM25_CACHE)))
@@ -370,19 +425,35 @@ def retrieve(
     hybrid: bool = True,
     reranker=None,
     timings: dict | None = None,
+    mode: str | None = None,
 ):
     """Fuse semantic vector and lexical BM25 results, then optionally rerank.
 
-    The BM25 corpus is cached per vectorstore and source file. The optional
-    cross-encoder scores the fused candidate pool before returning top k.
+    mode: None (mặc định, dùng hybrid=True/False), hoặc một trong {"vector", "bm25", "hybrid"}.
+    BM25 corpus được cache theo vectorstore và source_file. Khi bật reranker, mỗi nhánh
+    luôn lấy ít nhất RERANK_POOL_SIZE ứng viên trước khi cross-encoder chấm điểm.
     """
+    effective_mode = mode or ("hybrid" if hybrid else "vector")
+    if effective_mode not in {"vector", "bm25", "hybrid"}:
+        raise ValueError(f"Unsupported retrieval mode: {effective_mode}")
+
     where = {"source_file": source_file_filter} if source_file_filter else None
-    branch_n = k * FETCH_MULT
-    pool_size = RERANK_POOL_SIZE if reranker is not None else k
-    vec_docs = vectorstore.similarity_search(question, k=branch_n, filter=where)
-    if not hybrid:
+    pool_size = max(k, RERANK_POOL_SIZE) if reranker is not None else k
+    branch_n = max(k * FETCH_MULT, pool_size)
+
+    if effective_mode == "vector":
+        vec_docs = vectorstore.similarity_search(question, k=branch_n, filter=where)
         candidates = vec_docs[:pool_size]
+    elif effective_mode == "bm25":
+        corpus, bm25 = _get_bm25_corpus(vectorstore, where)
+        if not corpus or bm25 is None:
+            candidates = []
+        else:
+            bm25_scores = bm25.get_scores(_tokenize(question))
+            ranked_idx = sorted(range(len(corpus)), key=lambda i: bm25_scores[i], reverse=True)
+            candidates = [corpus[i] for i in ranked_idx[:pool_size]]
     else:
+        vec_docs = vectorstore.similarity_search(question, k=branch_n, filter=where)
         # BM25 ranks the full file corpus; its index is cached between questions.
         # Move to a dedicated full-text index if document collections grow substantially.
         corpus, bm25 = _get_bm25_corpus(vectorstore, where)
@@ -396,7 +467,7 @@ def retrieve(
             bm25_docs = [corpus[i] for i in ranked_idx[:branch_n]]
             candidates = _rrf_fuse(vec_docs, bm25_docs, pool_size)
 
-    if reranker is None:
+    if reranker is None or not candidates:
         return candidates[:k]
 
     rerank_started = time.perf_counter()
@@ -405,6 +476,13 @@ def retrieve(
         timings["rerank_seconds"] = time.perf_counter() - rerank_started
     order = sorted(range(len(candidates)), key=lambda i: scores[i], reverse=True)
     return [candidates[i] for i in order[:k]]
+
+
+def filter_sources_for_answer(answer_text: str, sources: list[str]) -> list[str]:
+    """Ẩn nguồn trang PDF khi câu trả lời được đánh dấu là kiến thức ngoài tài liệu."""
+    if (answer_text or "").lstrip().startswith(OUT_OF_SCOPE_PREFIX):
+        return []
+    return list(sources)
 
 
 def answer_stream(
@@ -444,12 +522,14 @@ def answer_stream(
         timings["retrieval_seconds"] = time.perf_counter() - retrieval_started
 
     context = "\n\n".join([doc.page_content for doc in results])
-    sources = []
+    sources: list[str] = []
     for doc in results:
         page = doc.metadata.get("page", "?")
         if isinstance(page, int):
             page += 1  # PyPDFLoader ghi số trang bắt đầu từ 0.
-        sources.append(f"{doc.metadata.get('source_file', '?')} - trang {page}")
+        label = f"{doc.metadata.get('source_file', '?')} - trang {page}"
+        if label not in sources:
+            sources.append(label)
 
     prompt = ChatPromptTemplate.from_template(
         """Bạn là trợ lý AI hỏi đáp tài liệu PDF. Trả lời bằng tiếng Việt.
@@ -509,9 +589,9 @@ def answer_question(
     timings: dict | None = None,
     reranker=None,
 ):
-    """Phiên bản không streaming của answer_stream — tiện cho test/eval."""
+    """Phiên bản không streaming của answer_stream — tiện cho CLI/test/eval."""
     generator, sources = answer_stream(
         question, vectorstore, llm, source_file_filter, k, history, timings, reranker
     )
     answer_text = "".join(generator)
-    return answer_text, sources
+    return answer_text, filter_sources_for_answer(answer_text, sources)
