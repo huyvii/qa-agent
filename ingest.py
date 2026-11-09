@@ -1,36 +1,35 @@
-import os
-from dotenv import load_dotenv
-from langchain_community.document_loaders import PyPDFLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_chroma import Chroma
-from langchain_huggingface import HuggingFaceEmbeddings
+"""Index one PDF into the configured local Chroma collection."""
 
-load_dotenv()
+import argparse
+from pathlib import Path
 
-# 1. Đọc file PDF
-loader = PyPDFLoader("data/Hoang-An_Pham-AI-Engineer (2).pdf")
-documents = loader.load()
-print(f"Đã đọc {len(documents)} trang từ PDF")
+from rag_core import ingest_pdf
 
-# 2. Chia nhỏ văn bản thành chunk
-splitter = RecursiveCharacterTextSplitter(
-    chunk_size=500,
-    chunk_overlap=50
-)
-chunks = splitter.split_documents(documents)
-print(f"Đã chia thành {len(chunks)} chunk")
-print("--- Ví dụ chunk đầu tiên ---")
-print(chunks[0].page_content[:300])
 
-# 3. Tạo embedding model (chạy local, free, CPU) — cùng model với rag_core
-embedding_model = HuggingFaceEmbeddings(
-    model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
-)
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Ingest a PDF into the QA Agent vector store.")
+    parser.add_argument("pdf", type=Path, help="path to the PDF file")
+    parser.add_argument(
+        "--source-file",
+        help="stable source_file metadata value (defaults to the PDF filename)",
+    )
+    args = parser.parse_args()
+    if not args.pdf.is_file():
+        parser.error(f"PDF file not found: {args.pdf}")
 
-# 4. Lưu vào Chroma vector DB
-vectorstore = Chroma.from_documents(
-    documents=chunks,
-    embedding=embedding_model,
-    persist_directory="./chroma_db"
-)
-print(f"Đã lưu {len(chunks)} vector vào Chroma DB tại ./chroma_db")
+    timings = {}
+    try:
+        result = ingest_pdf(
+            str(args.pdf), source_file=args.source_file or args.pdf.name, timings=timings
+        )
+    except Exception as exc:
+        parser.exit(1, f"PDF ingest failed ({type(exc).__name__}). Check the file and logs.\n")
+
+    print(f"Indexed {result['chunks']} chunks from {args.source_file or args.pdf.name}")
+    if result["empty_pages"]:
+        print(f"Pages with little or no text (one-based): {[page + 1 for page in result['empty_pages']]}")
+    print(f"Completed in {timings['total_seconds']:.2f}s")
+
+
+if __name__ == "__main__":
+    main()

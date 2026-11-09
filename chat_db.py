@@ -2,10 +2,12 @@ import os
 import sqlite3
 import json
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
 # Đường dẫn có thể override qua env — cần cho Docker volume và unit test
-DB_PATH = os.getenv("CHAT_DB_PATH", "chat_history.db")
+PROJECT_DIR = Path(__file__).resolve().parent
+DB_PATH = os.getenv("CHAT_DB_PATH", str(PROJECT_DIR / "chat_history.db"))
 
 
 def _now() -> str:
@@ -17,7 +19,7 @@ def _now() -> str:
 
 
 def get_connection():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=10)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -95,6 +97,22 @@ def get_documents() -> list[dict]:
     rows = conn.execute("SELECT * FROM documents ORDER BY ingested_at DESC").fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+def delete_document(source_file: str):
+    """Delete a document record and every conversation/message attached to it."""
+    conn = get_connection()
+    try:
+        conn.execute(
+            "DELETE FROM messages WHERE conversation_id IN "
+            "(SELECT id FROM conversations WHERE source_file = ?)",
+            (source_file,),
+        )
+        conn.execute("DELETE FROM conversations WHERE source_file = ?", (source_file,))
+        conn.execute("DELETE FROM documents WHERE source_file = ?", (source_file,))
+        conn.commit()
+    finally:
+        conn.close()
 
 
 # ==================== conversations ====================

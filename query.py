@@ -1,54 +1,42 @@
-import os
-from dotenv import load_dotenv
-from langchain_chroma import Chroma
-from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_core.prompts import ChatPromptTemplate
+"""Ask one question against the local vector store from the command line."""
 
-load_dotenv()
+import argparse
 
-# Nạp lại vector DB đã lưu ở bước ingest
-embedding_model = HuggingFaceEmbeddings(
-    model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
-)
-vectorstore = Chroma(
-    persist_directory="./chroma_db",
-    embedding_function=embedding_model
-)
+from rag_core import answer_question, create_llm, get_vectorstore
 
-# Câu hỏi test — sửa lại theo nội dung file PDF của bạn
-question = "Nội dung chính của tài liệu này là gì?"
 
-# Semantic search: lấy 3 đoạn liên quan nhất
-results = vectorstore.similarity_search(question, k=3)
-print("--- 3 đoạn liên quan nhất tìm được ---")
-for i, doc in enumerate(results):
-    print(f"[{i+1}] {doc.page_content[:200]}")
-    print()
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Ask a question about indexed PDFs.")
+    parser.add_argument("question", nargs="+", help="question to ask")
+    parser.add_argument(
+        "--source-file",
+        help="limit retrieval to the original PDF filename used during ingest",
+    )
+    parser.add_argument("--k", type=int, default=3, help="number of context chunks")
+    args = parser.parse_args()
+    if args.k < 1:
+        parser.error("--k must be at least 1")
 
-# Ghép context lại thành 1 chuỗi
-context = "\n\n".join([doc.page_content for doc in results])
+    try:
+        llm = create_llm()
+        answer, sources = answer_question(
+            " ".join(args.question),
+            get_vectorstore(),
+            llm,
+            source_file_filter=args.source_file,
+            k=args.k,
+        )
+    except RuntimeError as exc:
+        parser.exit(1, f"{exc}\n")
+    except Exception as exc:
+        parser.exit(1, f"Question failed ({type(exc).__name__}). Check configuration and logs.\n")
 
-# Gọi Gemini để sinh câu trả lời dựa trên context
-llm = ChatGoogleGenerativeAI(
-    model="gemini-3.6-flash",
-    google_api_key=os.getenv("GOOGLE_API_KEY")
-)
+    print(answer)
+    if sources:
+        print("\nSources:")
+        for source in sources:
+            print(f"- {source}")
 
-prompt = ChatPromptTemplate.from_template(
-    """Dựa vào ngữ cảnh sau đây, hãy trả lời câu hỏi bằng tiếng Việt.
-Nếu ngữ cảnh không đủ thông tin để trả lời, hãy nói rõ là không tìm thấy thông tin.
 
-Ngữ cảnh:
-{context}
-
-Câu hỏi: {question}
-
-Trả lời:"""
-)
-
-chain = prompt | llm
-response = chain.invoke({"context": context, "question": question})
-
-print("--- Câu trả lời ---")
-print(response.content[0]['text'])
+if __name__ == "__main__":
+    main()

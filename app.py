@@ -10,8 +10,8 @@ from rag_core import (
     get_vectorstore,
     delete_document_vectors,
     get_reranker,
+    create_llm,
 )
-from langchain_google_genai import ChatGoogleGenerativeAI
 import chat_db
 
 st.set_page_config(page_title="QA Agent", page_icon="📄", layout="wide")
@@ -20,7 +20,19 @@ chat_db.init_db()
 
 # Gate mật khẩu tùy chọn: đặt APP_PASSWORD trong .env khi đưa link cho người khác.
 # Đây là gate kiểu demo — production cần đăng nhập thật theo user (xem README).
-APP_PASSWORD = os.getenv("APP_PASSWORD")
+def get_config_value(name: str) -> str | None:
+    value = os.getenv(name)
+    if value and value.strip():
+        return value.strip()
+    try:
+        value = st.secrets.get(name)
+    except Exception:
+        value = None
+    return str(value).strip() if value else None
+
+
+APP_PASSWORD = get_config_value("APP_PASSWORD")
+GOOGLE_API_KEY = get_config_value("GOOGLE_API_KEY")
 
 if APP_PASSWORD and not st.session_state.get("authenticated"):
     st.title("🔒 QA Agent")
@@ -43,20 +55,53 @@ def load_vectorstore():
 
 @st.cache_resource
 def load_llm():
-    return ChatGoogleGenerativeAI(
-        model="gemini-3.6-flash",
-        google_api_key=os.getenv("GOOGLE_API_KEY")
+    retries_value = get_config_value("GEMINI_MAX_RETRIES")
+    try:
+        retries = int(retries_value) if retries_value else None
+    except ValueError as exc:
+        raise RuntimeError("GEMINI_MAX_RETRIES phải là số nguyên không âm.") from exc
+    return create_llm(
+        api_key=GOOGLE_API_KEY,
+        model_name=get_config_value("GEMINI_MODEL"),
+        max_retries=retries,
     )
+
+
+def request_error_message(error: Exception) -> str:
+    if isinstance(error, RuntimeError):
+        return str(error)
+    message = str(error).casefold()
+    status = str(
+        getattr(error, "status_code", None) or getattr(error, "code", "")
+    ).casefold()
+    if status == "429" or "resource_exhausted" in message or "quota" in message:
+        return (
+            "Gemini đang giới hạn quota/tốc độ cho project này (HTTP 429). "
+            "Chờ quota hồi lại hoặc kiểm tra mục Rate limits trong Google AI Studio."
+        )
+    if status in {"401", "403"} or "api key not valid" in message:
+        return (
+            "Gemini từ chối xác thực. Kiểm tra GOOGLE_API_KEY trong .env hoặc Streamlit Secrets, "
+            "và xác nhận key thuộc project đang bật Gemini API."
+        )
+    if status == "404" or "model not found" in message:
+        return "Không tìm thấy model Gemini. Kiểm tra giá trị GEMINI_MODEL trong cấu hình."
+    return f"Yêu cầu thất bại ({type(error).__name__}). Kiểm tra log của Streamlit để xem chi tiết."
 
 
 if "active_conversation_id" not in st.session_state:
     st.session_state.active_conversation_id = None
+if "pending_delete_document" not in st.session_state:
+    st.session_state.pending_delete_document = None
 
 
 # ==================== Sidebar ====================
 with st.sidebar:
     st.header("📂 Tải tài liệu")
-    uploaded_file = st.file_uploader("Chọn file PDF", type="pdf")
+    uploaded_file = st.file_uploader("Chọn file PDF", type="pdf", max_upload_size=30)
+
+    if not GOOGLE_API_KEY:
+        st.warning("Chưa có GOOGLE_API_KEY. Thêm key vào .env hoặc Streamlit Secrets để hỏi đáp.")
 
     if uploaded_file is not None:
         if st.button("Nạp tài liệu / Tạo cuộc trò chuyện mới"):
@@ -67,10 +112,6 @@ with st.sidebar:
             if existing and existing["content_hash"] == content_hash:
                 st.info(f"'{file_name}' đã được nạp trước đó với cùng nội dung — dùng lại dữ liệu cũ, không nhúng lại.")
             else:
-                if existing:
-                    # Trùng tên nhưng khác nội dung: thay thế vector cũ bằng nội dung mới
-                    delete_document_vectors(file_name)
-
                 with st.spinner("Đang xử lý tài liệu..."):
                     ingest_timings = {}
                     with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
@@ -83,9 +124,31 @@ with st.sidebar:
                             source_file=file_name,
                             timings=ingest_timings,
                         )
+                    except Exception as exc:
+                        if existing and existing.get("content_hash"):
+                            try:
+                                delete_document_vectors(
+                                    file_name,
+                                    keep_content_hash=existing["content_hash"],
+                                )
+                            except Exception:
+                                pass
+                        st.error(
+                            f"Không nạp được PDF ({type(exc).__name__}). "
+                            "Kiểm tra file có hợp lệ và có thể trích xuất văn bản không."
+                        )
+                        st.stop()
                     finally:
                         os.unlink(tmp_path)
 
+                    try:
+                        # Chỉ dọn phiên bản cũ sau khi bản mới đã được lập chỉ mục thành công.
+                        delete_document_vectors(file_name, keep_content_hash=content_hash)
+                    except Exception:
+                        st.warning(
+                            "PDF mới đã được nạp, nhưng chưa dọn được các vector phiên bản cũ. "
+                            "Kiểm tra kho Chroma trước khi tiếp tục hỏi đáp file này."
+                        )
                     chat_db.save_document(file_name, content_hash, result["chunks"])
                     # Reopen the persistent collection after adding new chunks.
                     load_vectorstore.clear()
@@ -109,6 +172,43 @@ with st.sidebar:
             new_conv_id = chat_db.create_conversation(source_file=file_name)
             st.session_state.active_conversation_id = new_conv_id
             st.rerun()
+
+    st.divider()
+    st.subheader("Tài liệu đã nạp")
+    documents = chat_db.get_documents()
+    if not documents:
+        st.caption("Chưa có tài liệu nào trong kho.")
+    for document in documents:
+        source_file = document["source_file"]
+        info_col, action_col = st.columns([5, 1])
+        info_col.caption(f"{source_file} · {document['chunk_count']} đoạn")
+        if action_col.button("Xóa", key=f"delete_doc_{source_file}"):
+            st.session_state.pending_delete_document = source_file
+            st.rerun()
+
+        if st.session_state.pending_delete_document == source_file:
+            st.warning(
+                f"Xóa '{source_file}' sẽ xóa vector đã nạp cùng toàn bộ cuộc trò chuyện "
+                "và lịch sử gắn với file này. File PDF gốc trên máy bạn không bị xóa."
+            )
+            confirm_col, cancel_col = st.columns(2)
+            if confirm_col.button("Xác nhận xóa", key=f"confirm_doc_{source_file}"):
+                try:
+                    delete_document_vectors(source_file)
+                    chat_db.delete_document(source_file)
+                    active_id = st.session_state.active_conversation_id
+                    active_conversation = chat_db.get_conversation(active_id) if active_id else None
+                    if active_conversation and active_conversation["source_file"] == source_file:
+                        st.session_state.active_conversation_id = None
+                    st.session_state.pending_delete_document = None
+                    load_vectorstore.clear()
+                except Exception:
+                    st.error("Không xóa được tài liệu. Kiểm tra kho Chroma và SQLite rồi thử lại.")
+                else:
+                    st.rerun()
+            if cancel_col.button("Hủy", key=f"cancel_doc_{source_file}"):
+                st.session_state.pending_delete_document = None
+                st.rerun()
 
     st.divider()
     st.header("💬 Cuộc trò chuyện")
@@ -137,6 +237,9 @@ with st.sidebar:
 
 # ==================== Khung chat chính ====================
 active_id = st.session_state.active_conversation_id
+if active_id is not None and chat_db.get_conversation(active_id) is None:
+    active_id = None
+    st.session_state.active_conversation_id = None
 
 if active_id is None:
     st.info("👈 Tải 1 file PDF hoặc chọn 1 cuộc trò chuyện ở sidebar để bắt đầu.")
@@ -156,43 +259,49 @@ else:
     question = st.chat_input("Nhập câu hỏi về tài liệu...")
 
     if question:
-        # messages được nạp trước khi lưu câu hỏi mới nên history chưa gồm câu này
-        history = [{"role": m["role"], "content": m["content"]} for m in messages[-8:]]
+        if not GOOGLE_API_KEY:
+            st.error("Chưa cấu hình GOOGLE_API_KEY. Thêm key vào .env hoặc Streamlit Secrets rồi thử lại.")
+            st.stop()
+        # Lịch sử đầy đủ nằm trong SQLite; rag_core chỉ gửi vài lượt phù hợp cho Gemini.
+        history = [{"role": m["role"], "content": m["content"]} for m in messages]
 
         chat_db.save_message(active_id, "user", question)
         with st.chat_message("user"):
             st.write(question)
 
-        with st.chat_message("assistant"):
-            request_started = time.perf_counter()
-            resource_started = time.perf_counter()
-            vectorstore = load_vectorstore()
-            llm = load_llm()
-            reranker = get_reranker()
-            resource_load_seconds = time.perf_counter() - resource_started
-            answer_timings = {}
-            with st.spinner("Đang tìm câu trả lời..."):
-                answer_gen, sources = answer_stream(
-                    question, vectorstore, llm,
-                    source_file_filter=active_conv["source_file"],
-                    history=history,
-                    timings=answer_timings,
-                    reranker=reranker,
+        try:
+            with st.chat_message("assistant"):
+                request_started = time.perf_counter()
+                resource_started = time.perf_counter()
+                vectorstore = load_vectorstore()
+                llm = load_llm()
+                reranker = get_reranker()
+                resource_load_seconds = time.perf_counter() - resource_started
+                answer_timings = {}
+                with st.spinner("Đang tìm câu trả lời..."):
+                    answer_gen, sources = answer_stream(
+                        question, vectorstore, llm,
+                        source_file_filter=active_conv["source_file"],
+                        history=history,
+                        timings=answer_timings,
+                        reranker=reranker,
+                    )
+                # stream từng token; write_stream trả về text đầy đủ để lưu DB
+                full_answer = st.write_stream(answer_gen)
+                memory_seconds = answer_timings.get("memory_seconds", 0.0)
+                st.caption(
+                    "⏱ "
+                    f"load resource {resource_load_seconds:.2f}s · "
+                    f"ghi nhớ cục bộ {memory_seconds:.2f}s · "
+                    f"retrieval {answer_timings['retrieval_seconds']:.2f}s · "
+                    f"rerank {answer_timings.get('rerank_seconds', 0.0):.2f}s · "
+                    f"Gemini {answer_timings['llm_seconds']:.2f}s · "
+                    f"tổng {time.perf_counter() - request_started:.2f}s"
                 )
-            # stream từng token; write_stream trả về text đầy đủ để lưu DB
-            full_answer = st.write_stream(answer_gen)
-            condense_seconds = answer_timings.get("condense_seconds", 0.0)
-            st.caption(
-                "⏱ "
-                f"load resource {resource_load_seconds:.2f}s · "
-                f"viết lại câu hỏi {condense_seconds:.2f}s · "
-                f"retrieval {answer_timings['retrieval_seconds']:.2f}s · "
-                f"rerank {answer_timings.get('rerank_seconds', 0.0):.2f}s · "
-                f"Gemini {answer_timings['llm_seconds']:.2f}s · "
-                f"tổng {time.perf_counter() - request_started:.2f}s"
-            )
-            with st.expander("Nguồn tham khảo"):
-                for s in sources:
-                    st.write(f"- {s}")
-
-        chat_db.save_message(active_id, "assistant", full_answer, sources)
+                with st.expander("Nguồn tham khảo"):
+                    for s in sources:
+                        st.write(f"- {s}")
+            chat_db.save_message(active_id, "assistant", full_answer, sources)
+        except Exception as exc:
+            with st.chat_message("assistant"):
+                st.error(request_error_message(exc))

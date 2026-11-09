@@ -7,7 +7,7 @@ from retrieval_baseline import normalize
 
 
 def test_normalize_is_case_insensitive():
-    assert normalize("IELTS: 6.5") == normalize("ielts: 6.5")
+    assert normalize("Area: 77 cm²") == normalize("area: 77 cm²")
 
 
 def test_normalize_collapses_whitespace():
@@ -16,5 +16,5 @@ def test_normalize_collapses_whitespace():
 
 def test_normalize_nfkc_unifies_unicode_forms():
     # Dấu cách không ngắt (NBSP) và ký tự tổ hợp phải quy về cùng một dạng
-    assert normalize("GPA\u00a07.69") == normalize("GPA 7.69")
+    assert normalize("Area\u00a077 cm²") == normalize("Area 77 cm²")
     assert normalize("e\u0301") == normalize("é")
